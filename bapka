@@ -1,37 +1,78 @@
-#!/usr/bin/env python3
-
 import argparse
 import glob
 import os
 import re
 import subprocess
+import tempfile
+import shutil
+import sys
 
-TMPDIR = "/tmp/bapka"
+TMPDIR = os.path.join(tempfile.gettempdir(), "bapka")
 
 
 def apktool_decompile(file):
     print("APKTOOL: Starting to decompile")
+    print("updated by @ripcracked")
     outdir = os.path.join(TMPDIR, "out")
+    
+    if os.path.exists(outdir):
+        try:
+            shutil.rmtree(outdir)
+        except Exception as e:
+            print(f"Warning: Failed to clean previous output: {e}")
+    
+    os.makedirs(TMPDIR, exist_ok=True)
+    os.makedirs(outdir, exist_ok=True)
+    
+    apktool_cmd = "apktool.bat" if os.name == "nt" else "apktool"
+    
+    if os.name == "nt":
+        try:
+            subprocess.run([apktool_cmd, "--version"], 
+                           capture_output=True, 
+                           check=False, 
+                           shell=True)
+        except FileNotFoundError:
+            apktool_cmd = "apktool"
+    
     try:
         subprocess.run(
-            ["apktool", "d", file, "-b", "-f", "-r", "-o", outdir], check=True
+            [apktool_cmd, "d", file, "-b", "-f", "-r", "-o", outdir], 
+            check=True,
+            shell=(os.name == "nt"), 
+            text=True
         )
-    except Exception as e:
+    except subprocess.CalledProcessError as e:
         print(f"APKTOOL: Failed to decompile the apk: {e}")
-        exit(1)
+        sys.exit(1)
+    except FileNotFoundError:
+        print("APKTOOL: Command not found. Please ensure apktool is installed and in your PATH.")
+        sys.exit(1)
     print("APKTOOL: Decompiled successfully")
+    print("updated by @ripcracked")
     return outdir
 
 
 def grep(root_dir, pattern) -> None | re.Match:
     pattern = re.compile(pattern)
-    for path in glob.iglob("**/*.smali", root_dir=root_dir, recursive=True):
-        abspath = os.path.join(root_dir, path)
-        with open(abspath, "r") as f:
-            for line in f:
-                result = re.search(pattern, line)
-                if result is not None:
-                    return result
+    
+    root_dir = os.path.normpath(root_dir)
+    
+    for root, _, files in os.walk(root_dir):
+        for file in files:
+            if not file.endswith('.smali'):
+                continue
+                
+            abspath = os.path.join(root, file)
+            try:
+                with open(abspath, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        result = re.search(pattern, line)
+                        if result is not None:
+                            return result
+            except Exception as e:
+                print(f"Warning: Error reading file {abspath}: {e}")
+                continue
 
     return None
 
@@ -46,12 +87,12 @@ def get_bmp_version(dir):
         return maybe_ver
 
     print("ERROR: No BMP version detected.")
-    exit(1)
+    sys.exit(1)
 
 
 def get_bmp2_version(dir):
     print("Searching for BMP 2.X.X")
-    result = grep(dir, "Initializing Akamai BMP SDK Version (.+)\"")
+    result = grep(dir, r"Initializing Akamai BMP SDK Version (.+)\"")
     if result is None:
         return None
     return result.groups()[0]
@@ -59,19 +100,43 @@ def get_bmp2_version(dir):
 
 def get_bmp3_version(dir):
     print("Searching for BMP 3.X.X")
-    result = grep(dir, "BMPSDK/(.+) \\(")
+    result = grep(dir, r"BMPSDK/(.+) \(")
     if result is None:
         return None
     return result.groups()[0]
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("filename", help=".apk file to analyze")
-    args = parser.parse_args()
-    config = vars(args)
+def cleanup():
+    if os.path.exists(TMPDIR):
+        try:
+            shutil.rmtree(TMPDIR)
+            print(f"Cleaned up temporary directory: {TMPDIR}")
+        except Exception as e:
+            print(f"Warning: Failed to clean up temporary directory {TMPDIR}: {e}")
 
-    decompiled_dir = apktool_decompile(config["filename"])
-    bmp_version = get_bmp_version(decompiled_dir)
-    print("Akamai BMP found!")
-    print(f"BMP Version: {bmp_version}")
+
+if __name__ == "__main__":
+    try:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("filename", help=".apk file to analyze")
+        args = parser.parse_args()
+        config = vars(args)
+
+        filename = os.path.abspath(config["filename"])
+        if not os.path.isfile(filename):
+            print(f"Error: File not found: {filename}")
+            sys.exit(1)
+            
+        decompiled_dir = apktool_decompile(filename)
+        bmp_version = get_bmp_version(decompiled_dir)
+        print("Akamai BMP found!")
+        print(f"BMP Version: {bmp_version}")
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user")
+        sys.exit(1)
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        sys.exit(1)
+    finally:
+        # cleanup()
+        pass
